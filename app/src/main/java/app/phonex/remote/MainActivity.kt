@@ -34,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.google.firebase.auth.FirebaseAuth
 
 private val Bg = Color(0xFF0A0F1E)
 private val Panel = Color(0xFF151D31)
@@ -52,8 +53,27 @@ fun PhoneXApp() {
     val context = LocalContext.current
     var role by remember { mutableStateOf("Controller") }
     var torchOn by remember { mutableStateOf(false) }
-    var battery by remember { mutableIntStateOf(readBattery(context)) }
-    var paired by remember { mutableStateOf(false) }
+    val battery = remember { readBattery(context) }
+    var authStatus by remember { mutableStateOf("Connecting to Firebase…") }
+    var userId by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) {
+        val auth = FirebaseAuth.getInstance()
+        val existing = auth.currentUser
+        if (existing != null) {
+            userId = existing.uid
+            authStatus = "Firebase connected"
+        } else {
+            auth.signInAnonymously()
+                .addOnSuccessListener { result ->
+                    userId = result.user?.uid
+                    authStatus = if (userId != null) "Firebase connected" else "Authentication incomplete"
+                }
+                .addOnFailureListener { error ->
+                    authStatus = "Firebase error: ${error.localizedMessage ?: "Please check setup"}"
+                }
+        }
+    }
 
     val cameraPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -73,7 +93,14 @@ fun PhoneXApp() {
                         Text("Remote device dashboard", color = Color.LightGray, fontSize = 13.sp)
                     }
                     Surface(color = Purple.copy(alpha = .18f), shape = RoundedCornerShape(14.dp)) {
-                        Text("v1.0", color = Color.White, modifier = Modifier.padding(12.dp))
+                        Text("v1.1", color = Color.White, modifier = Modifier.padding(12.dp))
+                    }
+                }
+                Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("FIREBASE STATUS", color = Mint, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Text(authStatus, color = Color.White, fontSize = 14.sp)
+                        if (userId != null) Text("Device ID: ${userId!!.take(10)}…", color = Color.LightGray, fontSize = 11.sp)
                     }
                 }
                 Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
@@ -89,7 +116,7 @@ fun PhoneXApp() {
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     InfoCard("Battery", "$battery%", Modifier.weight(1f))
-                    InfoCard("Connection", if (paired) "Paired" else "Not paired", Modifier.weight(1f))
+                    InfoCard("Connection", "Not paired", Modifier.weight(1f))
                 }
                 Text(if (role == "Controller") "REMOTE CONTROLS" else "RECEIVER TEST CONTROLS", color = Mint, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 ControlCard("Flashlight", if (torchOn) "Currently ON" else "Currently OFF",
@@ -105,17 +132,16 @@ fun PhoneXApp() {
                 ControlCard("Bluetooth settings", "Choose Bluetooth state in Android settings",
                     { Icon(Icons.Default.Bluetooth, null, tint = Mint) }, "Open settings",
                     onClick = { context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) })
-                ControlCard("Lock screen", "Requires explicit Device Admin setup (not enabled in this starter)",
+                ControlCard("Lock screen", "Not enabled in this starter build",
                     { Icon(Icons.Default.Lock, null, tint = Mint) }, "Not enabled", enabled = false, onClick = {})
-                ControlCard("Open app", "Android may restrict launching other apps from background",
-                    { Icon(Icons.Default.Settings, null, tint = Mint) }, "App picker coming next", enabled = false, onClick = {})
+                ControlCard("Open app", "Android may restrict background app launches",
+                    { Icon(Icons.Default.Settings, null, tint = Mint) }, "Coming next", enabled = false, onClick = {})
                 Button(onClick = {
-                    paired = false
-                    Toast.makeText(context, "Cloud pairing will be enabled after Firebase setup.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, "Secure pairing is the next implementation step.", Toast.LENGTH_LONG).show()
                 }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Purple)) {
                     Text("Set up secure pairing")
                 }
-                Text("Starter build: controls on this screen operate this phone only. Remote commands are intentionally disabled until Firebase authentication, pairing and server-side authorization are configured.", color = Color.Gray, fontSize = 11.sp)
+                Text("Firebase anonymous sign-in is enabled. Pairing and remote commands are not active yet; database access remains locked until secure pairing rules are added.", color = Color.Gray, fontSize = 11.sp)
             }
         }
     }
