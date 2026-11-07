@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "910742635530",
+    "project_id": "phonexremote-448f3",
+    "storage_bucket": "phonexremote-448f3.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:910742635530:android:92084d800214e679618bf3",
+        "android_client_info": {
+          "package_name": "app.phonex.remote"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBqP-zBvsiR3N0hTbKJAQRKGVwS2JAoDU0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
