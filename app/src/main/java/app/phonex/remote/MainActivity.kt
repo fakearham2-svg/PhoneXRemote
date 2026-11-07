@@ -1,6 +1,8 @@
 package app.phonex.remote
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -35,11 +37,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.database.DataSnapshot
+import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.database.ValueEventListener
 
 private val Bg = Color(0xFF0A0F1E)
 private val Panel = Color(0xFF151D31)
 private val Purple = Color(0xFF805DFF)
 private val Mint = Color(0xFF37D3B1)
+private const val DATABASE_URL = "https://phonexremote-448f3-default-rtdb.asia-southeast1.firebasedatabase.app"
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -51,11 +58,16 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun PhoneXApp() {
     val context = LocalContext.current
+    val database = remember { FirebaseDatabase.getInstance(DATABASE_URL).reference }
     var role by remember { mutableStateOf("Controller") }
     var torchOn by remember { mutableStateOf(false) }
     val battery = remember { readBattery(context) }
     var authStatus by remember { mutableStateOf("Connecting to Firebase…") }
     var userId by remember { mutableStateOf<String?>(null) }
+    var receiverId by remember { mutableStateOf("") }
+    var pairingStatus by remember { mutableStateOf("Not paired") }
+    var incomingControllers by remember { mutableStateOf(setOf<String>()) }
+    var requestSent by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         val auth = FirebaseAuth.getInstance()
@@ -72,6 +84,49 @@ fun PhoneXApp() {
                 .addOnFailureListener { error ->
                     authStatus = "Firebase error: ${error.localizedMessage ?: "Please check setup"}"
                 }
+        }
+    }
+
+    DisposableEffect(userId, role) {
+        val uid = userId
+        if (uid == null || role != "Receiver") {
+            onDispose { }
+        } else {
+            val requestsRef = database.child("pairingRequests").child(uid)
+            val listener = object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    incomingControllers = snapshot.children.mapNotNull { child ->
+                        child.child("controllerUid").getValue(String::class.java)
+                    }.toSet()
+                }
+                override fun onCancelled(error: DatabaseError) {
+                    pairingStatus = "Pairing read blocked: check database rules"
+                }
+            }
+            requestsRef.addValueEventListener(listener)
+            onDispose { requestsRef.removeEventListener(listener) }
+        }
+    }
+
+    DisposableEffect(userId, receiverId, role, requestSent) {
+        val uid = userId
+        val target = receiverId.trim()
+        if (uid == null || role != "Controller" || !requestSent || target.isBlank()) {
+            onDispose { }
+        } else {
+            val approvalRef = database.child("pairingApprovals").child(uid).child(target)
+            val listener = object : ValueEventListener {
+                override fun onDataChange(snapshot: DataSnapshot) {
+                    if (snapshot.child("status").getValue(String::class.java) == "approved") {
+                        pairingStatus = "Paired — receiver approved"
+                    }
+                }
+                override fun onCancelled(error: DatabaseError) {
+                    pairingStatus = "Approval check blocked: check database rules"
+                }
+            }
+            approvalRef.addValueEventListener(listener)
+            onDispose { approvalRef.removeEventListener(listener) }
         }
     }
 
@@ -93,14 +148,22 @@ fun PhoneXApp() {
                         Text("Remote device dashboard", color = Color.LightGray, fontSize = 13.sp)
                     }
                     Surface(color = Purple.copy(alpha = .18f), shape = RoundedCornerShape(14.dp)) {
-                        Text("v1.1", color = Color.White, modifier = Modifier.padding(12.dp))
+                        Text("v1.2", color = Color.White, modifier = Modifier.padding(12.dp))
                     }
                 }
                 Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("FIREBASE STATUS", color = Mint, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         Text(authStatus, color = Color.White, fontSize = 14.sp)
-                        if (userId != null) Text("Device ID: ${userId!!.take(10)}…", color = Color.LightGray, fontSize = 11.sp)
+                        if (userId != null) {
+                            Text("Your Device ID", color = Color.LightGray, fontSize = 11.sp)
+                            Text(userId!!, color = Color.White, fontSize = 11.sp)
+                            OutlinedButton(onClick = {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                clipboard.setPrimaryClip(ClipData.newPlainText("PhoneX Device ID", userId!!))
+                                Toast.makeText(context, "Device ID copied", Toast.LENGTH_SHORT).show()
+                            }) { Text("Copy my Device ID") }
+                        }
                     }
                 }
                 Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
@@ -108,17 +171,83 @@ fun PhoneXApp() {
                         Text("DEVICE ROLE", color = Mint, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                             listOf("Controller", "Receiver").forEachIndexed { index, item ->
-                                SegmentedButton(selected = role == item, onClick = { role = item }, shape = SegmentedButtonDefaults.itemShape(index, 2)) { Text(item) }
+                                SegmentedButton(selected = role == item, onClick = {
+                                    role = item
+                                    requestSent = false
+                                    pairingStatus = "Not paired"
+                                }, shape = SegmentedButtonDefaults.itemShape(index, 2)) { Text(item) }
                             }
                         }
-                        Text(if (role == "Controller") "Use this phone to send approved commands." else "This phone will receive commands after pairing and consent.", color = Color.LightGray, fontSize = 13.sp)
+                        Text(if (role == "Controller") "Enter the other phone's Device ID to request pairing." else "Share this phone's Device ID with the controller. Approve only people you know.", color = Color.LightGray, fontSize = 13.sp)
+                    }
+                }
+                if (role == "Controller") {
+                    Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text("PAIR WITH RECEIVER", color = Mint, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            OutlinedTextField(
+                                value = receiverId,
+                                onValueChange = { receiverId = it.trim(); requestSent = false; pairingStatus = "Not paired" },
+                                modifier = Modifier.fillMaxWidth(),
+                                label = { Text("Receiver Device ID") },
+                                singleLine = true
+                            )
+                            Button(
+                                enabled = userId != null && receiverId.trim().length >= 20 && receiverId.trim() != userId,
+                                onClick = {
+                                    val target = receiverId.trim()
+                                    val uid = userId ?: return@Button
+                                    val request = mapOf("controllerUid" to uid, "createdAt" to System.currentTimeMillis(), "status" to "pending")
+                                    database.child("pairingRequests").child(target).child(uid).setValue(request)
+                                        .addOnSuccessListener {
+                                            requestSent = true
+                                            pairingStatus = "Request sent — waiting for receiver approval"
+                                        }
+                                        .addOnFailureListener { error ->
+                                            pairingStatus = "Request failed: ${error.localizedMessage ?: "check database rules"}"
+                                        }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = Purple)
+                            ) { Text("Send pairing request") }
+                            Text(pairingStatus, color = if (pairingStatus.startsWith("Paired")) Mint else Color.LightGray, fontSize = 12.sp)
+                        }
+                    }
+                } else {
+                    Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text("PAIRING REQUESTS", color = Mint, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            if (incomingControllers.isEmpty()) {
+                                Text("No incoming requests yet.", color = Color.LightGray, fontSize = 13.sp)
+                            } else {
+                                incomingControllers.forEach { controllerUid ->
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text("Controller: ${controllerUid.take(12)}…", color = Color.White, fontSize = 13.sp)
+                                        Button(onClick = {
+                                            val uid = userId ?: return@Button
+                                            val approval = mapOf("controllerUid" to controllerUid, "receiverUid" to uid, "status" to "approved", "approvedAt" to System.currentTimeMillis())
+                                            database.child("pairingApprovals").child(controllerUid).child(uid).setValue(approval)
+                                                .addOnSuccessListener {
+                                                    pairingStatus = "Approved pairing with ${controllerUid.take(8)}…"
+                                                    database.child("pairingRequests").child(uid).child(controllerUid).removeValue()
+                                                }
+                                                .addOnFailureListener { error ->
+                                                    pairingStatus = "Approval failed: ${error.localizedMessage ?: "check database rules"}"
+                                                }
+                                        }, colors = ButtonDefaults.buttonColors(containerColor = Purple)) { Text("Approve this phone") }
+                                    }
+                                    Divider(color = Color.DarkGray)
+                                }
+                            }
+                            Text(pairingStatus, color = Mint, fontSize = 12.sp)
+                        }
                     }
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     InfoCard("Battery", "$battery%", Modifier.weight(1f))
-                    InfoCard("Connection", "Not paired", Modifier.weight(1f))
+                    InfoCard("Pairing", if (pairingStatus.startsWith("Paired") || pairingStatus.startsWith("Approved")) "Approved" else "Pending", Modifier.weight(1f))
                 }
-                Text(if (role == "Controller") "REMOTE CONTROLS" else "RECEIVER TEST CONTROLS", color = Mint, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text(if (role == "Controller") "LOCAL CONTROLS" else "RECEIVER TEST CONTROLS", color = Mint, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 ControlCard("Flashlight", if (torchOn) "Currently ON" else "Currently OFF",
                     { Icon(Icons.Default.FlashlightOn, null, tint = Mint) }, if (torchOn) "Turn off" else "Turn on",
                     onClick = {
@@ -136,12 +265,7 @@ fun PhoneXApp() {
                     { Icon(Icons.Default.Lock, null, tint = Mint) }, "Not enabled", enabled = false, onClick = {})
                 ControlCard("Open app", "Android may restrict background app launches",
                     { Icon(Icons.Default.Settings, null, tint = Mint) }, "Coming next", enabled = false, onClick = {})
-                Button(onClick = {
-                    Toast.makeText(context, "Secure pairing is the next implementation step.", Toast.LENGTH_LONG).show()
-                }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Purple)) {
-                    Text("Set up secure pairing")
-                }
-                Text("Firebase anonymous sign-in is enabled. Pairing and remote commands are not active yet; database access remains locked until secure pairing rules are added.", color = Color.Gray, fontSize = 11.sp)
+                Text("Pairing requests require the receiver's approval. Pairing is not a remote-control feature; remote commands are still disabled. Configure the matching secure database rules before testing.", color = Color.Gray, fontSize = 11.sp)
             }
         }
     }
